@@ -1,0 +1,26 @@
+{
+  "name": "placar-mira",
+  "version": "1.0.0",
+  "private": true,
+  "description": "placar. — painel MIRA: CRM de conteúdo e desempenho para as páginas Instagram da rede, em Cloudflare Workers + D1 + KV",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "gen:seed": "node scripts/gen-seed.mjs > seeds/seed-demo.sql",
+    "migrate:local": "wrangler d1 migrations apply placar-mira --local",
+    "migrate:remote": "wrangler d1 migrations apply placar-mira --remote",
+    "seed:local": "wrangler d1 execute placar-mira --local --file=seeds/seed-demo.sql",
+    "seed:remote": "wrangler d1 execute placar-mira --remote --file=seeds/seed-demo.sql",
+    "provision": "bash scripts/provision.sh"
+  },
+  "dependencies": {
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250620.0",
+    "typescript": "^5.7.2",
+    "wrangler": "^4.107.0"
+  }
+}

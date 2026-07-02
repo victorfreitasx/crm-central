@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>placar. — painel MIRA</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='18' fill='%23151210'/%3E%3Ctext x='50' y='72' font-size='64' font-weight='800' text-anchor='middle' fill='%23CBFB45' font-family='sans-serif'%3Ep%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/ds/fonts.css">
+<link rel="stylesheet" href="/ds/colors.css">
+<link rel="stylesheet" href="/ds/typography.css">
+<link rel="stylesheet" href="/ds/spacing.css">
+<link rel="stylesheet" href="/ds/effects.css">
+<link rel="stylesheet" href="/ds/base.css">
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#FBF4E9; }
+  * { box-sizing:border-box; }
+  ::selection { background:#CBFB45; color:#151210; }
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-thumb { background:#B7AEA6; border-radius:99px; border:2px solid #FBF4E9; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  @keyframes plToast { from { transform:translateY(14px); opacity:0; } to { transform:none; opacity:1; } }
+  @keyframes plPop { from { transform:scale(0.96); opacity:0; } to { transform:none; opacity:1; } }
+  @keyframes plSpin { to { transform:rotate(360deg); } }
+  input[type="date"] { font-family:"Space Mono", monospace; }
+  input::placeholder, textarea::placeholder { color:#B7AEA6; }
+  .pl-hover-row:hover { background:var(--paper-50); }
+  .pl-hover-ink:hover { border-color:var(--ink-900) !important; color:var(--ink-900) !important; }
+  .pl-btn { transition: box-shadow 120ms var(--ease-snap), transform 120ms var(--ease-snap); cursor:pointer; user-select:none; }
+  .pl-btn:active { transform:translate(2px,2px); box-shadow:0 0 0 0 var(--ink-900) !important; }
+  body { font-family:var(--font-sans); color:var(--ink-900); }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>

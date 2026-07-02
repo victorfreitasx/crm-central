@@ -1,0 +1,39 @@
+/* Diferentona — Radius, borders, shadows, motion
+   Signature look: chunky radii, 2px ink borders, HARD offset "sticker" shadows. */
+
+:root {
+  /* ---- Radius (chunky) ---- */
+  --radius-xs:  6px;
+  --radius-sm:  10px;
+  --radius-md:  16px;
+  --radius-lg:  24px;
+  --radius-xl:  32px;
+  --radius-pill: 999px;
+
+  /* ---- Borders ---- */
+  --border-w:   2px;          /* @kind spacing */
+  --border-w-bold: 3px;       /* @kind spacing */
+  --border:     var(--border-w) solid var(--border-ink);
+  --border-bold:var(--border-w-bold) solid var(--border-ink);
+
+  /* ---- Hard offset shadows (sticker / neobrutalist) ---- */
+  --shadow-sticker-sm: 3px 3px 0 0 var(--ink-900);
+  --shadow-sticker:    5px 5px 0 0 var(--ink-900);
+  --shadow-sticker-lg: 8px 8px 0 0 var(--ink-900);
+  --shadow-pink:       5px 5px 0 0 var(--pink-500);
+  --shadow-lime:       5px 5px 0 0 var(--lime-600);
+  --shadow-violet:     5px 5px 0 0 var(--violet-500);
+
+  /* Soft shadow — used sparingly (overlays, popovers) */
+  --shadow-soft: 0 12px 30px -8px rgba(21,18,16,0.28);
+
+  /* ---- Motion ---- */
+  --ease-out:    cubic-bezier(0.22, 1, 0.36, 1);     /* @kind other */
+  --ease-snap:   cubic-bezier(0.34, 1.56, 0.64, 1);  /* @kind other */
+  --dur-fast:    120ms;  /* @kind other */
+  --dur-base:    180ms;  /* @kind other */
+  --dur-slow:    300ms;  /* @kind other */
+
+  /* Press behaviour: nudge into the shadow */
+  --press-shift: 2px; /* @kind spacing */
+}

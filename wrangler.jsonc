@@ -1,0 +1,57 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "placar-mira",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Static front-end (SPA). API/auth/media routes always hit the Worker first.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/media/*"]
+  },
+
+  // D1: dados relacionais (usuários, páginas, posts, métricas)
+  // O id é preenchido pelo scripts/provision.sh na primeira implantação.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "placar-mira",
+      "database_id": "REPLACE_D1_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // KV: sessões + cache de agregados + mídia das artes
+  "kv_namespaces": [
+    { "binding": "SESSIONS", "id": "REPLACE_KV_SESSIONS_ID" },
+    { "binding": "CACHE", "id": "REPLACE_KV_CACHE_ID" }
+  ],
+
+  // Sync de métricas / publicação agendada a cada 30 min (como no painel)
+  "triggers": {
+    "crons": ["*/30 * * * *"]
+  },
+
+  "vars": {
+    // "dev" = magic link próprio (link devolvido na resposta em vez de email).
+    // "clerk" = valida JWT do Clerk (configure CLERK_* como secrets).
+    "AUTH_MODE": "dev",
+    // Email que vira gestor no primeiro login (bootstrap sem seed).
+    "ADMIN_EMAIL": "victorfreitasx@gmail.com",
+    // URL pública do app (usada nos redirects OAuth da Meta).
+    "APP_URL": "https://placar-mira.workers.dev",
+    "DEMO_MODE": "1"
+  },
+
+  "observability": { "enabled": true }
+
+  // Secrets (via `wrangler secret put`):
+  //   SESSION_SECRET     — chave p/ assinar sessões e criptografar tokens Meta
+  //   META_APP_ID        — app da Meta (Instagram Graph API)
+  //   META_APP_SECRET
+  //   CLERK_SECRET_KEY   — opcional, se AUTH_MODE=clerk
+  //   CLERK_JWKS_URL     — opcional, ex.: https://<slug>.clerk.accounts.dev/.well-known/jwks.json
+}

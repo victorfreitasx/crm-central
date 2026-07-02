@@ -1,0 +1,74 @@
+/* Diferentona — Color tokens
+   Bold Brazilian sticker palette: warm ink, cream paper, hot pink primary,
+   acid lime pop, electric violet, tangerine. High-contrast, loud, friendly. */
+
+:root {
+  /* ---- Base palette ---- */
+  --ink-900: #151210;   /* warm near-black — primary text, borders */
+  --ink-700: #393330;
+  --ink-500: #6B635D;   /* muted text */
+  --ink-300: #B7AEA6;   /* placeholder/disabled */
+
+  --paper-0:  #FFFFFF;
+  --paper-50: #FBF4E9;  /* cream — default page surface */
+  --paper-100:#F4E9D6;  /* warmer cream — raised/alt surface */
+  --paper-200:#EADBC2;  /* border on cream, dividers */
+
+  --pink-600: #E01464;
+  --pink-500: #FF2E7E;  /* PRIMARY */
+  --pink-200: #FFC9DF;
+  --pink-100: #FFE6EF;
+
+  --lime-600: #9FD400;
+  --lime-500: #CBFB45;  /* ACCENT pop */
+  --lime-200: #ECFFB8;
+
+  --violet-600:#5B2DE0;
+  --violet-500:#7A4DFF;  /* SECONDARY */
+  --violet-200:#D9CCFF;
+
+  --tang-600: #E8521A;
+  --tang-500: #FF6B2C;   /* TERTIARY pop */
+  --tang-200: #FFD7C2;
+
+  /* ---- Semantic raw ---- */
+  --green-500:  #1FB66B;
+  --green-100:  #D2F4E2;
+  --amber-500:  #FFB020;
+  --amber-100:  #FFEFC9;
+  --red-500:    #FF3B30;
+  --red-100:    #FFD9D6;
+
+  /* ---- Semantic aliases ---- */
+  --bg-page:        var(--paper-50);
+  --bg-raised:      var(--paper-0);
+  --bg-alt:         var(--paper-100);
+  --surface-card:   var(--paper-0);
+  --surface-inset:  var(--paper-100);
+
+  --text-strong:    var(--ink-900);
+  --text-body:      var(--ink-700);
+  --text-muted:     var(--ink-500);
+  --text-placeholder: var(--ink-300);
+  --text-on-dark:   var(--paper-50);
+  --text-on-pink:   #FFFFFF;
+  --text-on-lime:   var(--ink-900);
+
+  --border-ink:     var(--ink-900);  /* signature hard 2px ink border */
+  --border-soft:    var(--paper-200);
+
+  --brand-primary:  var(--pink-500);
+  --brand-primary-press: var(--pink-600);
+  --brand-accent:   var(--lime-500);
+  --brand-secondary:var(--violet-500);
+  --brand-tertiary: var(--tang-500);
+
+  --focus-ring:     var(--violet-500);
+
+  --success: var(--green-500);
+  --warning: var(--amber-500);
+  --danger:  var(--red-500);
+  --success-bg: var(--green-100);
+  --warning-bg: var(--amber-100);
+  --danger-bg:  var(--red-100);
+}

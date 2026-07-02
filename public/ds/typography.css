@@ -1,0 +1,36 @@
+/* Diferentona — Typography tokens */
+
+:root {
+  /* ---- Families ---- */
+  --font-display: "Bricolage Grotesque", "Space Grotesk", system-ui, sans-serif;
+  --font-sans:    "Space Grotesk", system-ui, -apple-system, sans-serif;
+  --font-mono:    "Space Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  /* ---- Weights ---- */
+  --fw-regular: 400; /* @kind font */
+  --fw-medium:  500; /* @kind font */
+  --fw-bold:    700; /* @kind font */
+  --fw-black:   800; /* @kind font */
+
+  /* ---- Fluid display scale (loud, tight) ---- */
+  --fs-display-xl: 88px;  --lh-display-xl: 0.92; /* @kind font */
+  --fs-display-lg: 64px;  --lh-display-lg: 0.94; /* @kind font */
+  --fs-display-md: 44px;  --lh-display-md: 0.98; /* @kind font */
+  --fs-title:      32px;  --lh-title:      1.04; /* @kind font */
+  --fs-heading:    24px;  --lh-heading:    1.12; /* @kind font */
+  --fs-subhead:    19px;  --lh-subhead:    1.25; /* @kind font */
+
+  /* ---- Body & UI ---- */
+  --fs-body-lg: 18px;  --lh-body-lg: 1.55; /* @kind font */
+  --fs-body:    16px;  --lh-body:    1.55; /* @kind font */
+  --fs-body-sm: 14px;  --lh-body-sm: 1.5; /* @kind font */
+  --fs-caption: 13px;  --lh-caption: 1.4; /* @kind font */
+  --fs-micro:   11px;  --lh-micro:   1.3; /* @kind font */
+
+  /* ---- Letter-spacing ---- */
+  --ls-display: -0.02em;   /* @kind font */
+  --ls-tight:   -0.01em;   /* @kind font */
+  --ls-normal:  0;         /* @kind font */
+  --ls-label:   0.04em;    /* @kind font */
+  --ls-stamp:   0.14em;    /* @kind font */
+}

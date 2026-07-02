@@ -1,0 +1,8 @@
+/* Diferentona — Webfonts
+   NOTE: No brand font files were provided. These are Google Fonts substitutions:
+   - Bricolage Grotesque (display) — characterful contemporary grotesque
+   - Space Grotesk (body/UI) — clean, slightly quirky
+   - Space Mono (mono/labels) — typewriter accent for stamps & meta
+   Replace with real brand fonts when available. */
+
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Space+Grotesk:wght@400;500;700&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap');
