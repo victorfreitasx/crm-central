@@ -42,19 +42,28 @@ export async function resolveLoginUser(env: Env, email: string): Promise<UserRow
   return null;
 }
 
-export async function createMagicToken(env: Env, email: string): Promise<string> {
+// Retorna o token (na URL) e um nonce (guardado em cookie httpOnly no navegador
+// que pediu o link). O /verify exige os dois, então um link vazado não pode ser
+// resgatado em outro navegador — fecha o CSRF/fixação de sessão via magic link.
+export async function createMagicToken(env: Env, email: string, bindNonce = true): Promise<{ token: string; nonce: string }> {
   const t = token(24);
-  await env.SESSIONS.put(`magic:${t}`, JSON.stringify({ email }), { expirationTtl: MAGIC_TTL });
-  return t;
+  // login vincula ao navegador (nonce); convite NÃO vincula (abre no navegador do convidado)
+  const nonce = bindNonce ? token(16) : '';
+  await env.SESSIONS.put(`magic:${t}`, JSON.stringify(bindNonce ? { email, nonce } : { email }), { expirationTtl: MAGIC_TTL });
+  return { token: t, nonce };
 }
 
-export async function consumeMagicToken(env: Env, t: string): Promise<string | null> {
+export async function consumeMagicToken(env: Env, t: string, nonce: string | undefined): Promise<string | null> {
   const raw = await env.SESSIONS.get(`magic:${t}`);
   if (!raw) return null;
-  await env.SESSIONS.delete(`magic:${t}`);
   try {
-    return (JSON.parse(raw) as { email: string }).email;
+    const rec = JSON.parse(raw) as { email: string; nonce?: string };
+    // só consome (e invalida) o token se o nonce do cookie bater
+    if (rec.nonce && rec.nonce !== nonce) return null;
+    await env.SESSIONS.delete(`magic:${t}`);
+    return rec.email;
   } catch {
+    await env.SESSIONS.delete(`magic:${t}`);
     return null;
   }
 }
@@ -120,7 +129,8 @@ export async function verifyClerkJwt(env: Env, jwt: string): Promise<Record<stri
   }
   if (header.alg !== 'RS256') return null;
   const keys = await clerkJwks(env);
-  const jwk = keys.find((k) => k.kid === header.kid) || keys[0];
+  // exige match exato de kid — sem fallback pra keys[0] (evita aceitar token de kid desconhecido)
+  const jwk = keys.find((k) => k.kid === header.kid);
   if (!jwk) return null;
   const key = await crypto.subtle.importKey(
     'jwk',
@@ -139,6 +149,14 @@ export async function verifyClerkJwt(env: Env, jwt: string): Promise<Record<stri
   const now = Math.floor(Date.now() / 1000);
   if (typeof payload.exp === 'number' && payload.exp < now - 30) return null;
   if (typeof payload.nbf === 'number' && payload.nbf > now + 30) return null;
+  // issuer: rejeita tokens de outra instância do Clerk
+  if (env.CLERK_ISSUER && payload.iss !== env.CLERK_ISSUER) return null;
+  // authorized party: garante que veio de uma origem de front-end permitida
+  // (também rejeita tokens de template JWT, que não têm azp)
+  if (env.CLERK_AUTHORIZED_PARTIES) {
+    const allowed = env.CLERK_AUTHORIZED_PARTIES.split(',').map((s) => s.trim()).filter(Boolean);
+    if (!payload.azp || !allowed.includes(payload.azp as string)) return null;
+  }
   return payload;
 }
 

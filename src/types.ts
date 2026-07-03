@@ -12,6 +12,8 @@ export interface Env {
   META_APP_SECRET?: string;
   CLERK_SECRET_KEY?: string;
   CLERK_JWKS_URL?: string;
+  CLERK_ISSUER?: string;
+  CLERK_AUTHORIZED_PARTIES?: string;
 }
 
 export type Role = 'gestor' | 'equipe';
@@ -44,6 +46,7 @@ export interface PageRow {
   fb_page_id: string | null;
   access_token_enc: string | null;
   connected_at: number | null;
+  token_invalid: number;
   med_eng: number | null;
   created_at: number;
 }

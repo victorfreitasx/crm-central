@@ -149,7 +149,11 @@ export async function agendaScreen(params, query) {
     container.replaceChildren(header(), spinner());
     let data;
     try {
-      data = await api.get('/api/agenda?y=' + y + '&m=' + m);
+      // manda os limites do mês em epoch ms no fuso local — evita posts sumirem
+      // na fronteira do mês por diferença UTC×local no servidor.
+      const start = new Date(y, m, 1).getTime();
+      const end = new Date(y, m + 1, 1).getTime();
+      data = await api.get('/api/agenda?y=' + y + '&m=' + m + '&start=' + start + '&end=' + end);
     } catch (e) {
       container.replaceChildren(header(), h('div', { style: cardCss }, emptyBox('não deu pra carregar a agenda', e.message)));
       return;

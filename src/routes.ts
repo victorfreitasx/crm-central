@@ -1,5 +1,6 @@
 // API do placar. — todas as rotas /api/* e /media/*.
 import { Hono } from 'hono';
+import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { Env, Fmt, MetricsRow, PageRow, Perms, PostRow, SessionUser, UserRow } from './types';
 import { DAY } from './types';
 import {
@@ -15,7 +16,7 @@ import {
 import { computeAgg, invalidateAgg, weekStart } from './lib/agg';
 import { demoSync } from './lib/demo';
 import { handleOauthCallback, metaConfigured, oauthStartUrl, publishToInstagram, verifyState } from './meta';
-import { isEmail, json, token, uid } from './lib/util';
+import { clamp, isEmail, json, token, uid } from './lib/util';
 
 type App = { Bindings: Env; Variables: { user: SessionUser } };
 export const app = new Hono<App>();
@@ -99,11 +100,22 @@ app.post('/api/auth/request-link', async (c) => {
   const user = await resolveLoginUser(c.env, email);
   // resposta idêntica p/ email desconhecido — não vaza quem é membro
   if (!user || user.status === 'suspenso') return c.json({ sent: true });
-  const t = await createMagicToken(c.env, email);
+  const { token: t, nonce } = await createMagicToken(c.env, email);
   const link = `${new URL(c.req.url).origin}/api/auth/verify?token=${t}`;
+  // liga o token a este navegador — o /verify só aceita com o nonce do cookie
+  setCookie(c, 'ml_nonce', nonce, {
+    httpOnly: true,
+    secure: new URL(c.req.url).protocol === 'https:',
+    sameSite: 'Lax',
+    path: '/api/auth',
+    maxAge: 900,
+  });
   await audit(c.env, user.id, 'magic_link_requested');
-  if (c.env.AUTH_MODE === 'dev') {
-    // modo dev: devolve o link direto (sem provedor de email configurado)
+  // só devolve o link na resposta quando a origem é local (dev) — nunca num host público,
+  // mesmo que AUTH_MODE=dev vaze pra produção por engano.
+  const host = new URL(c.req.url).hostname;
+  const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+  if (c.env.AUTH_MODE === 'dev' && isLocal) {
     return c.json({ sent: true, link });
   }
   // produção: pendura aqui seu provedor (Resend/Postmark/SES). Por ora registra no log.
@@ -113,7 +125,9 @@ app.post('/api/auth/request-link', async (c) => {
 
 app.get('/api/auth/verify', async (c) => {
   const t = c.req.query('token') || '';
-  const email = t ? await consumeMagicToken(c.env, t) : null;
+  const nonce = getCookie(c, 'ml_nonce');
+  const email = t ? await consumeMagicToken(c.env, t, nonce) : null;
+  deleteCookie(c, 'ml_nonce', { path: '/api/auth' });
   if (!email) return c.redirect('/#/login?erro=link-invalido');
   const user = await userByEmail(c.env, email);
   if (!user || user.status === 'suspenso') return c.redirect('/#/login?erro=sem-acesso');
@@ -141,6 +155,7 @@ app.get('/api/bootstrap', requireAuth, async (c) => {
     .results;
   const pagesByUser: Record<string, string[]> = {};
   for (const m of members) (pagesByUser[m.user_id] ||= []).push(m.page_id);
+  const lastSync = await c.env.CACHE.get('sync:last');
 
   return c.json({
     me: { id: u.id, nome: u.nome, email: u.email, cargo: u.cargo, role: u.role, cor: u.cor, pages: u.pages },
@@ -161,6 +176,7 @@ app.get('/api/bootstrap', requireAuth, async (c) => {
     demoMode: c.env.DEMO_MODE === '1',
     metaConfigured: metaConfigured(c.env),
     weekStart: weekStart(Date.now()),
+    lastSync: lastSync ? Number(lastSync) : null,
   });
 });
 
@@ -168,9 +184,12 @@ app.get('/api/bootstrap', requireAuth, async (c) => {
 
 app.get('/api/dashboard', requireAuth, requireGestor, async (c) => {
   const agg = await computeAgg(c.env);
-  const recentRows = await c.env.DB.prepare(`${POST_JOIN} WHERE p.status != 'rascunho' ORDER BY p.ts DESC LIMIT 8`).all<
-    PostRow & MetricsRow
-  >();
+  // exclui agendados futuros pra não empurrar os posts recém-publicados pra fora do card
+  const recentRows = await c.env.DB.prepare(
+    `${POST_JOIN} WHERE p.status != 'rascunho' AND p.ts <= ? ORDER BY p.ts DESC LIMIT 8`,
+  )
+    .bind(Date.now())
+    .all<PostRow & MetricsRow>();
   const totais = await c.env.DB.prepare("SELECT COUNT(*) AS c FROM posts WHERE status IN ('publicado','analisando')").first<{
     c: number;
   }>();
@@ -319,7 +338,11 @@ app.get('/api/posts/:id', requireAuth, async (c) => {
     .bind(c.req.param('id'))
     .first<PostRow & MetricsRow>();
   if (!row) return c.json({ error: 'post não encontrado' }, 404);
-  if (!canSeePost(u, row)) return c.json({ error: 'sem acesso a esse post' }, 403);
+  // gestor/autor sempre; equipe com perm 'metricas' vê posts publicados dos colegas
+  // (mesma regra do perfil), mas nunca rascunhos alheios.
+  let allowed = canSeePost(u, row);
+  if (!allowed && (await getPerms(c.env)).metricas && ['publicado', 'analisando'].includes(row.status)) allowed = true;
+  if (!allowed) return c.json({ error: 'sem acesso a esse post' }, 403);
   const page = await c.env.DB.prepare('SELECT med_eng FROM pages WHERE id = ?').bind(row.page_id).first<{ med_eng: number | null }>();
   return c.json({
     post: {
@@ -330,11 +353,15 @@ app.get('/api/posts/:id', requireAuth, async (c) => {
       comment_on: row.comment_on,
       comment_page_id: row.comment_page_id,
       comment_text: row.comment_text,
-      slides: json(row.slides, [] as { frame: string; media: string[] }[]),
+      slides: json(row.slides, [] as { frame: string; media: (string | null)[] }[]),
       ig_media_id: row.ig_media_id,
       publish_error: row.publish_error,
       cities: json(row.cities, null),
-      curve: json(row.curve, null),
+      // curve pode estar no formato antigo (array) ou {samples, curve} (sync real)
+      curve: (() => {
+        const raw = json<number[] | { curve?: number[] } | null>(row.curve, null);
+        return Array.isArray(raw) ? raw : raw?.curve ?? null;
+      })(),
       synced_at: row.synced_at ?? null,
     },
     medEng: page?.med_eng ?? null,
@@ -350,18 +377,22 @@ interface PostBody {
   comment_on?: boolean;
   comment_page_id?: string;
   comment_text?: string;
-  slides?: { frame: string; media: string[]; art?: string }[];
+  slides?: { frame: string; media: (string | null)[]; art?: string }[];
   tile_bg?: string;
   tile_fg?: string;
 }
 
 const FRAMES = new Set(['1', '2h', '2v', '3']);
 
-function validSlides(slides: PostBody['slides']): { frame: string; media: string[]; art?: string }[] {
+type Slide = { frame: string; media: (string | null)[]; art?: string };
+
+function validSlides(slides: PostBody['slides']): Slide[] {
   if (!Array.isArray(slides)) return [{ frame: '1', media: [] }];
   return slides.slice(0, 10).map((s) => ({
     frame: FRAMES.has(s?.frame) ? s.frame : '1',
-    media: Array.isArray(s?.media) ? s.media.filter((m) => typeof m === 'string').slice(0, 4) : [],
+    // preserva a POSIÇÃO das células (buracos viram null) — as células do estúdio
+    // são indexadas por posição na grade; compactar embaralharia as imagens.
+    media: Array.isArray(s?.media) ? s.media.slice(0, 4).map((m) => (typeof m === 'string' ? m : null)) : [],
     ...(typeof s?.art === 'string' ? { art: s.art } : {}),
   }));
 }
@@ -466,7 +497,9 @@ app.post('/api/posts/:id/media', requireAuth, async (c) => {
   const post = await c.env.DB.prepare('SELECT * FROM posts WHERE id = ?').bind(c.req.param('id')).first<PostRow>();
   if (!post) return c.json({ error: 'post não encontrado' }, 404);
   if (!canSeePost(u, post)) return c.json({ error: 'sem acesso' }, 403);
-  const slide = Math.max(0, Number(c.req.query('slide')) || 0);
+  // limita índices ao que validSlides aceita (10 artes × 4 células) — sem isso um
+  // ?slide=1e8 estoura a memória do Worker no while abaixo (DoS).
+  const slide = clamp(0, 9, Math.floor(Number(c.req.query('slide')) || 0));
   const cellParam = c.req.query('cell') || '0'; // índice da célula ou 'art' (arte final renderizada)
   const ct = c.req.header('Content-Type') || '';
   if (!/^image\/(png|jpeg|webp)$/.test(ct)) return c.json({ error: 'envie image/png, jpeg ou webp' }, 415);
@@ -481,7 +514,7 @@ app.post('/api/posts/:id/media', requireAuth, async (c) => {
   while (slides.length <= slide) slides.push({ frame: '1', media: [] });
   const sl = slides[slide]!;
   if (cellParam === 'art') sl.art = key;
-  else sl.media[Math.max(0, Number(cellParam) || 0)] = key;
+  else sl.media[clamp(0, 3, Math.floor(Number(cellParam) || 0))] = key;
   await c.env.DB.prepare('UPDATE posts SET slides = ?, updated_at = ? WHERE id = ?')
     .bind(JSON.stringify(slides), Date.now(), post.id)
     .run();
@@ -512,33 +545,45 @@ app.post('/api/posts/:id/schedule', requireAuth, async (c) => {
   if (ts <= NOW + 60e3) {
     // publica agora
     ts = NOW;
+    if (!page.ig_user_id || !metaConfigured(c.env)) {
+      if (c.env.DEMO_MODE !== '1') {
+        return c.json({ error: 'página não conectada ao Instagram — conecte em páginas › conectar' }, 409);
+      }
+    }
+    // claim atômico: só um request consegue tirar o post do estado de espera —
+    // fecha a corrida de double-submit (duplo "enviar agora" não publica 2x).
+    const claim = await c.env.DB.prepare(
+      "UPDATE posts SET status = 'analisando', page_id = ?, ts = ?, updated_at = ? WHERE id = ? AND status IN ('rascunho','agendado','erro')",
+    )
+      .bind(pageId, ts, NOW, post.id)
+      .run();
+    if ((claim.meta.changes ?? 0) === 0) return c.json({ error: 'esse post já está sendo publicado' }, 409);
+
     if (page.ig_user_id && metaConfigured(c.env)) {
       try {
         const mediaId = await publishToInstagram(c.env, page, { ...post, page_id: pageId });
-        await c.env.DB.prepare(
-          "UPDATE posts SET status = 'analisando', page_id = ?, ts = ?, ig_media_id = ?, publish_error = NULL, updated_at = ? WHERE id = ?",
-        )
-          .bind(pageId, ts, mediaId, NOW, post.id)
+        await c.env.DB.prepare("UPDATE posts SET ig_media_id = ?, publish_error = NULL, updated_at = ? WHERE id = ?")
+          .bind(mediaId, NOW, post.id)
           .run();
       } catch (e) {
         await c.env.DB.prepare("UPDATE posts SET status = 'erro', publish_error = ?, updated_at = ? WHERE id = ?")
           .bind(String(e).slice(0, 500), NOW, post.id)
           .run();
+        await invalidateAgg(c.env);
         return c.json({ error: `falha ao publicar: ${String(e)}` }, 502);
       }
-    } else if (c.env.DEMO_MODE === '1') {
-      // demo: entra em análise e o sync simulado preenche as métricas
-      await c.env.DB.prepare("UPDATE posts SET status = 'analisando', page_id = ?, ts = ?, updated_at = ? WHERE id = ?")
-        .bind(pageId, ts, NOW, post.id)
-        .run();
-      c.executionCtx.waitUntil(demoSync(c.env).then(() => invalidateAgg(c.env)));
     } else {
-      return c.json({ error: 'página não conectada ao Instagram — conecte em páginas › conectar' }, 409);
+      // demo: o sync simulado preenche as métricas
+      c.executionCtx.waitUntil(demoSync(c.env).then(() => invalidateAgg(c.env)));
     }
   } else {
-    await c.env.DB.prepare("UPDATE posts SET status = 'agendado', page_id = ?, ts = ?, updated_at = ? WHERE id = ?")
+    // agendamento futuro: só sai de rascunho/agendado/erro
+    const claim = await c.env.DB.prepare(
+      "UPDATE posts SET status = 'agendado', page_id = ?, ts = ?, updated_at = ? WHERE id = ? AND status IN ('rascunho','agendado','erro')",
+    )
       .bind(pageId, ts, NOW, post.id)
       .run();
+    if ((claim.meta.changes ?? 0) === 0) return c.json({ error: 'esse post já saiu do rascunho' }, 409);
   }
   await invalidateAgg(c.env);
   await audit(c.env, u.id, ts === NOW ? 'post_published' : 'post_scheduled', post.id);
@@ -551,11 +596,18 @@ app.post('/api/posts/:id/schedule', requireAuth, async (c) => {
 app.get('/api/agenda', requireAuth, async (c) => {
   const u = c.get('user');
   const NOW = Date.now();
+  // o cliente manda os limites do mês em epoch ms no fuso do navegador (evita o
+  // bug de fronteira UTC×local); cai no cálculo do servidor se não vierem.
+  const sq = Number(c.req.query('start'));
+  const eq = Number(c.req.query('end'));
   const y = Number(c.req.query('y')) || new Date(NOW).getFullYear();
   const mq = Number(c.req.query('m'));
   const m = Number.isFinite(mq) ? mq : new Date(NOW).getMonth();
-  const start = new Date(y, m, 1).getTime();
-  const end = new Date(y, m + 1, 1).getTime();
+  const start = Number.isFinite(sq) ? sq : new Date(y, m, 1).getTime();
+  const end = Number.isFinite(eq) ? eq : new Date(y, m + 1, 1).getTime();
+
+  const perms = await getPerms(c.env);
+  const scoped = u.role !== 'gestor' && !perms.metricas;
 
   const inMonth = await c.env.DB.prepare(`${POST_JOIN} WHERE p.ts >= ? AND p.ts < ? AND p.status != 'rascunho' ORDER BY p.ts`)
     .bind(start, end)
@@ -570,9 +622,13 @@ app.get('/api/agenda', requireAuth, async (c) => {
   const drafts = await draftsQ.all<PostRow & MetricsRow>();
   const agg = await computeAgg(c.env);
 
+  // mantém os posts no calendário pra coordenação, mas esconde métricas alheias
+  // de quem não tem a permissão 'metricas'.
+  const redact = (p: PostOut): PostOut => (!scoped || p.author_id === u.id ? p : { ...p, m: null, idp: null, er: null });
+
   return c.json({
-    month: inMonth.results.map(postOut),
-    fila: fila.results.map(postOut),
+    month: inMonth.results.map(postOut).map(redact),
+    fila: fila.results.map(postOut).map(redact),
     drafts: drafts.results.map(postOut),
     heat: agg.G.heat,
     bestDay: agg.G.bestDay,
@@ -599,6 +655,7 @@ app.get('/api/pages', requireAuth, async (c) => {
       vert: p.vert,
       seguidores: p.seguidores,
       connected: !!p.ig_user_id,
+      tokenInvalid: !!(p as PageRow & { token_invalid?: number }).token_invalid,
       stats: agg.P[p.id] ?? null,
       team: teamBy[p.id] || [],
     })),
@@ -658,10 +715,12 @@ app.post('/api/invites', requireAuth, requireGestor, async (c) => {
     .bind(id, email, nome, b.cargo || 'editor', cores[Math.floor(Math.random() * cores.length)])
     .run();
   await audit(c.env, c.get('user').id, 'invite_sent', email);
-  const t = await createMagicToken(c.env, email);
+  const { token: t } = await createMagicToken(c.env, email, false); // convite abre no navegador do convidado
   const link = `${new URL(c.req.url).origin}/api/auth/verify?token=${t}`;
   // dev: devolve o link pro gestor repassar; produção: enviaria por email
-  return c.json({ ok: true, id, link: c.env.AUTH_MODE === 'dev' ? link : undefined }, 201);
+  const host = new URL(c.req.url).hostname;
+  const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+  return c.json({ ok: true, id, link: c.env.AUTH_MODE === 'dev' && isLocal ? link : undefined }, 201);
 });
 
 app.patch('/api/members/:id', requireAuth, requireGestor, async (c) => {
@@ -750,7 +809,13 @@ app.get('/api/export/posts.csv', requireAuth, async (c) => {
       ORDER BY p.ts DESC LIMIT 5000`,
   ).all<Record<string, string | number | null>>();
   const cols = ['id', 'cap', 'handle', 'autor', 'fmt', 'status', 'ts', 'idp', 'er', 're', 'im', 'li', 'co', 'sh', 'sa', 'cl', 'nf'];
-  const esc = (v: unknown) => (v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+  const esc = (v: unknown) => {
+    if (v == null) return '';
+    let s = String(v);
+    // neutraliza CSV/formula injection (=, +, -, @, tab, CR) em campos de texto
+    if (typeof v === 'string' && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
   const csv = [cols.join(','), ...rows.results.map((r) => cols.map((k) => esc(r[k])).join(','))].join('\n');
   return c.body(csv, 200, {
     'Content-Type': 'text/csv; charset=utf-8',
@@ -784,17 +849,23 @@ app.get('/api/meta/oauth/callback', async (c) => {
 // ---------------- admin (demo) ----------------
 
 app.post('/api/admin/wipe-demo', requireAuth, requireGestor, async (c) => {
-  // remove somente linhas do seed (ids curtos padrão u0..u7 / pg1..pg5 / p<n>)
+  const me = c.get('user').id;
+  // Remove o seed. Posts criados pela UI (id p_xxxx) que referenciam páginas/usuários
+  // do seed também precisam sair ANTES das páginas/usuários, senão a FK dispara e o
+  // batch inteiro reverte. As condições espelham exatamente os deletes de pages/users.
+  const demoPagesSel = "SELECT id FROM pages WHERE id GLOB 'pg[0-9]' AND ig_user_id IS NULL";
+  const demoUsersSel = `SELECT id FROM users WHERE id GLOB 'u[0-9]' AND id != '${me.replace(/'/g, "''")}'`;
+  const doomedPosts = `SELECT id FROM posts WHERE id GLOB 'p[0-9]*' OR page_id IN (${demoPagesSel}) OR author_id IN (${demoUsersSel})`;
   await c.env.DB.batch([
-    c.env.DB.prepare("DELETE FROM post_metrics WHERE post_id IN (SELECT id FROM posts WHERE id GLOB 'p[0-9]*')"),
-    c.env.DB.prepare("DELETE FROM posts WHERE id GLOB 'p[0-9]*'"),
+    c.env.DB.prepare(`DELETE FROM post_metrics WHERE post_id IN (${doomedPosts})`),
+    c.env.DB.prepare(`DELETE FROM posts WHERE id IN (${doomedPosts})`),
     c.env.DB.prepare("DELETE FROM page_members WHERE page_id GLOB 'pg[0-9]' OR user_id GLOB 'u[0-9]'"),
     c.env.DB.prepare("DELETE FROM page_metrics_daily WHERE page_id GLOB 'pg[0-9]'"),
-    c.env.DB.prepare("DELETE FROM pages WHERE id GLOB 'pg[0-9]' AND ig_user_id IS NULL"),
-    c.env.DB.prepare("DELETE FROM users WHERE id GLOB 'u[0-9]' AND id != ?").bind(c.get('user').id),
+    c.env.DB.prepare(`DELETE FROM pages WHERE id GLOB 'pg[0-9]' AND ig_user_id IS NULL`),
+    c.env.DB.prepare("DELETE FROM users WHERE id GLOB 'u[0-9]' AND id != ?").bind(me),
   ]);
   await invalidateAgg(c.env);
-  await audit(c.env, c.get('user').id, 'demo_wiped');
+  await audit(c.env, me, 'demo_wiped');
   return c.json({ ok: true });
 });
 

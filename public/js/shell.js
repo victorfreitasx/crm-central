@@ -1,5 +1,5 @@
 // casco do app: topbar + menu lateral + área de conteúdo + modal de agendamento.
-import { h, state, isGestor, go, toast, api, ACC, page, ini, weekLabel, agoShort, btn, monoLabel } from './core.js';
+import { h, state, isGestor, go, toast, api, ACC, page, ini, weekLabel, agoShort, btn, monoLabel, accessPages } from './core.js';
 
 const NAV_GESTOR = [
   ['/', 'visão geral'],
@@ -111,7 +111,8 @@ export function section(label, ...children) {
 // ---------- modal de agendamento ----------
 // onDone(mode) — chamado depois de agendar ('agendado') ou publicar ('agora')
 export function openScheduleModal(post, onDone) {
-  const pages = state.pages;
+  // só oferece páginas que o usuário pode publicar (evita 403 na confirmação)
+  const pages = accessPages().length ? accessPages() : state.pages;
   const defaultDate = new Date(Date.now() + 3 * 864e5);
   const dateVal = defaultDate.toISOString().slice(0, 10);
 
@@ -121,15 +122,19 @@ export function openScheduleModal(post, onDone) {
   const pageSel = h('select', { style: 'height:40px;border:2px solid var(--ink-900);border-radius:10px;background:var(--paper-0);padding:0 10px;font-family:var(--font-mono);font-size:13px;cursor:pointer;box-shadow:2px 2px 0 0 var(--ink-900)' },
     pages.map((p) => h('option', { value: p.id, selected: p.id === post.page_id }, p.handle)));
 
+  let busy = false;
   const close = () => overlay.remove();
   const act = async (now) => {
+    if (busy) return; // sem double-submit: um clique duplo não publica 2x
+    busy = true;
     try {
       const ts = now ? Date.now() : new Date(dateIn.value + 'T' + String(hourSel.value).padStart(2, '0') + ':00:00').getTime();
-      if (!Number.isFinite(ts)) { toast('escolhe uma data válida'); return; }
+      if (!Number.isFinite(ts)) { toast('escolhe uma data válida'); busy = false; return; }
       const res = await api.post(`/api/posts/${post.id}/schedule`, { ts, page_id: pageSel.value, now });
       close();
       onDone && onDone(now ? 'agora' : 'agendado', res);
     } catch (e) {
+      busy = false;
       toast(e.message);
     }
   };

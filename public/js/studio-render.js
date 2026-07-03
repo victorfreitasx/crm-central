@@ -226,7 +226,9 @@ export async function renderSlide({ slide, isHeader, page, title, text, comment,
 }
 
 export function canvasToBlob(canvas) {
-  return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+  // JPEG: o Instagram content publishing só aceita JPEG. O fundo é branco opaco
+  // (sem alpha a perder). Qualidade 0.92.
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
 }
 
 // ---------- zip (método STORE, sem compressão) ----------

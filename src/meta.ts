@@ -58,22 +58,59 @@ export async function verifyState(env: Env, state: string): Promise<boolean> {
   return Date.now() - ts < 15 * 60e3;
 }
 
+// Erro tipado da Graph API — carrega code/type/subcode pra classificar token inválido.
+export class GraphError extends Error {
+  constructor(
+    message: string,
+    readonly code: number = 0,
+    readonly type: string = '',
+    readonly subcode: number = 0,
+  ) {
+    super(message);
+  }
+}
+
+/** Token invalidado (senha trocada, permissão revogada, app desautorizado). */
+export function isTokenError(e: unknown): boolean {
+  return e instanceof GraphError && (e.code === 190 || e.type === 'OAuthException' || e.code === 102);
+}
+
+async function parseGraph<T>(path: string, res: Response): Promise<T> {
+  // Respostas 5xx/rate-limit da Graph às vezes vêm em HTML — não assume JSON.
+  const text = await res.text();
+  let body: (T & { error?: { message: string; code?: number; type?: string; error_subcode?: number } }) | undefined;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    /* não-JSON */
+  }
+  if (!body) throw new GraphError(`graph ${path}: HTTP ${res.status} ${text.slice(0, 120)}`, res.status);
+  if (!res.ok || body.error) {
+    const e = body.error;
+    throw new GraphError(`graph ${path}: ${e?.message || res.status}`, e?.code ?? res.status, e?.type ?? '', e?.error_subcode ?? 0);
+  }
+  return body;
+}
+
 async function graph<T>(path: string, params: Record<string, string>): Promise<T> {
   const u = new URL(`${GRAPH}${path}`);
   for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
   const res = await fetch(u.toString());
-  const body = (await res.json()) as T & { error?: { message: string; code: number } };
-  if (!res.ok || body.error) throw new Error(`graph ${path}: ${body.error?.message || res.status}`);
-  return body;
+  return parseGraph<T>(path, res);
 }
 
 async function graphPost<T>(path: string, params: Record<string, string>): Promise<T> {
   const u = new URL(`${GRAPH}${path}`);
   const form = new URLSearchParams(params);
   const res = await fetch(u.toString(), { method: 'POST', body: form });
-  const body = (await res.json()) as T & { error?: { message: string; code: number } };
-  if (!res.ok || body.error) throw new Error(`graph ${path}: ${body.error?.message || res.status}`);
-  return body;
+  return parseGraph<T>(path, res);
+}
+
+interface FbAccount {
+  id: string;
+  name: string;
+  access_token: string;
+  instagram_business_account?: { id: string; username: string; followers_count?: number };
 }
 
 /** Callback do OAuth: importa/atualiza páginas com conta IG business vinculada. */
@@ -92,22 +129,23 @@ export async function handleOauthCallback(env: Env, code: string): Promise<{ imp
     fb_exchange_token: tok.access_token,
   });
 
-  const accounts = await graph<{
-    data: {
-      id: string;
-      name: string;
-      access_token: string;
-      instagram_business_account?: { id: string; username: string; followers_count?: number };
-    }[];
-  }>('/me/accounts', {
-    fields: 'id,name,access_token,instagram_business_account{id,username,followers_count}',
-    access_token: long.access_token,
-    limit: '50',
-  });
+  // pagina /me/accounts — agências com >50 páginas no FB perderiam contas IG sem isso
+  const accounts: FbAccount[] = [];
+  let after: string | undefined;
+  do {
+    const resp = await graph<{ data: FbAccount[]; paging?: { cursors?: { after?: string }; next?: string } }>('/me/accounts', {
+      fields: 'id,name,access_token,instagram_business_account{id,username,followers_count}',
+      access_token: long.access_token,
+      limit: '50',
+      ...(after ? { after } : {}),
+    });
+    accounts.push(...resp.data);
+    after = resp.paging?.next ? resp.paging?.cursors?.after : undefined;
+  } while (after);
 
   const imported: string[] = [];
   const NOW = Date.now();
-  for (const acc of accounts.data) {
+  for (const acc of accounts) {
     const ig = acc.instagram_business_account;
     if (!ig) continue;
     const enc = await encrypt(env.SESSION_SECRET!, acc.access_token);
@@ -118,7 +156,7 @@ export async function handleOauthCallback(env: Env, code: string): Promise<{ imp
     if (existing) {
       await env.DB.prepare(
         `UPDATE pages SET ig_user_id = ?, ig_username = ?, fb_page_id = ?, access_token_enc = ?,
-                connected_at = ?, seguidores = COALESCE(?, seguidores), nome = ? WHERE id = ?`,
+                connected_at = ?, seguidores = COALESCE(?, seguidores), nome = ?, token_invalid = 0 WHERE id = ?`,
       )
         .bind(ig.id, ig.username, acc.id, enc, NOW, ig.followers_count ?? null, acc.name, existing.id)
         .run();
@@ -144,10 +182,27 @@ async function pageToken(env: Env, page: PageRow): Promise<string> {
 }
 
 function mediaUrls(env: Env, post: PostRow): string[] {
-  const slides = json<{ frame: string; media: string[]; art?: string }[]>(post.slides, []);
+  const slides = json<{ frame: string; media: (string | null)[]; art?: string }[]>(post.slides, []);
   const base = env.APP_URL.replace(/\/$/, '');
-  // prioriza a arte final renderizada do estúdio; senão usa as imagens cruas da grade
-  return slides.flatMap((s) => (s.art ? [s.art] : s.media || []).map((k) => `${base}/media/${k}`));
+  // prioriza a arte final renderizada do estúdio; senão usa as imagens cruas da grade.
+  // filtra células vazias (null) — nunca gera "/media/null".
+  return slides.flatMap((s) =>
+    (s.art ? [s.art] : (s.media || []).filter((k): k is string => !!k)).map((k) => `${base}/media/${k}`),
+  );
+}
+
+/** Espera o container ficar FINISHED antes do media_publish (Meta processa async). */
+async function awaitContainer(igId: string, creationId: string, token: string): Promise<void> {
+  for (let i = 0; i < 6; i++) {
+    const st = await graph<{ status_code?: string }>(`/${creationId}`, { fields: 'status_code', access_token: token });
+    if (st.status_code === 'FINISHED') return;
+    if (st.status_code === 'ERROR' || st.status_code === 'EXPIRED') {
+      throw new GraphError(`container ${creationId} falhou (${st.status_code})`, -1);
+    }
+    // backoff simples dentro do orçamento de CPU do cron
+    await new Promise((r) => setTimeout(r, 1500 + i * 800));
+  }
+  throw new GraphError(`container ${creationId} ainda IN_PROGRESS — tentar de novo`, 9007, '', 2207027);
 }
 
 /** Publica um post no Instagram. Lança erro com mensagem legível se algo falhar. */
@@ -167,6 +222,7 @@ export async function publishToInstagram(env: Env, page: PageRow, post: PostRow)
         is_carousel_item: 'true',
         access_token: token,
       });
+      await awaitContainer(igId, child.id, token);
       children.push(child.id);
     }
     const container = await graphPost<{ id: string }>(`/${igId}/media`, {
@@ -186,6 +242,9 @@ export async function publishToInstagram(env: Env, page: PageRow, post: PostRow)
     const container = await graphPost<{ id: string }>(`/${igId}/media`, params);
     creationId = container.id;
   }
+
+  // container é processado de forma assíncrona pela Meta — só publica quando FINISHED
+  await awaitContainer(igId, creationId, token);
 
   const published = await graphPost<{ id: string }>(`/${igId}/media_publish`, {
     creation_id: creationId,
@@ -234,9 +293,19 @@ export async function publishDue(env: Env): Promise<void> {
         .bind(mediaId, NOW, NOW, post.id)
         .run();
     } catch (e) {
-      await env.DB.prepare("UPDATE posts SET status = 'erro', publish_error = ?, updated_at = ? WHERE id = ?")
-        .bind(String(e).slice(0, 500), NOW, post.id)
-        .run();
+      // erro transitório (container ainda processando, 5xx, rede) → deixa 'agendado'
+      // pra próxima rodada do cron tentar de novo; só 'erro' quando é permanente.
+      const retryable =
+        e instanceof GraphError && (e.subcode === 2207027 || e.code === 9007 || (e.code >= 500 && e.code < 600) || e.code === -1);
+      if (retryable) {
+        await env.DB.prepare("UPDATE posts SET publish_error = ?, updated_at = ? WHERE id = ?")
+          .bind('tentando de novo: ' + String(e).slice(0, 400), NOW, post.id)
+          .run();
+      } else {
+        await env.DB.prepare("UPDATE posts SET status = 'erro', publish_error = ?, updated_at = ? WHERE id = ?")
+          .bind(String(e).slice(0, 500), NOW, post.id)
+          .run();
+      }
     }
   }
 }
@@ -246,14 +315,40 @@ interface InsightValue {
   values: { value: number | Record<string, number> }[];
 }
 
-/** Sincroniza métricas das páginas conectadas (limitado por execução p/ caber no orçamento de subrequests). */
+// Métricas de insights variam por tipo de mídia — 'saved' não existe pra STORY.
+function metricsFor(fmt: string): string {
+  if (fmt === 'story') return 'reach,views,shares,follows,profile_activity';
+  if (fmt === 'carrossel') return 'reach,views,saved,shares';
+  return 'reach,views,saved,shares,profile_activity,follows';
+}
+
+// Reconstrói a curva 48h (15 pontos, 0..1) a partir das amostras acumuladas de alcance.
+function buildCurve(samples: [number, number][]): number[] {
+  if (!samples.length) return [];
+  const max = Math.max(...samples.map((s) => s[1]), 1);
+  return Array.from({ length: 15 }, (_, i) => {
+    const h = (i / 14) * 48;
+    let v = 0;
+    for (const [ah, re] of samples) if (ah <= h + 0.01) v = re;
+    return +(v / max).toFixed(4);
+  });
+}
+
+// Teto de subrequests por rodada do cron (limite do plano free é 50; deixamos folga).
+const SYNC_BUDGET = 40;
+
+/** Sincroniza métricas das páginas conectadas, rotacionando por synced_at pra caber no orçamento. */
 export async function syncConnectedPages(env: Env): Promise<void> {
   const NOW = Date.now();
+  let budget = SYNC_BUDGET;
   const pages = (
-    await env.DB.prepare('SELECT * FROM pages WHERE ig_user_id IS NOT NULL AND access_token_enc IS NOT NULL').all<PageRow>()
+    await env.DB.prepare(
+      'SELECT * FROM pages WHERE ig_user_id IS NOT NULL AND access_token_enc IS NOT NULL AND token_invalid = 0',
+    ).all<PageRow>()
   ).results;
 
   for (const page of pages) {
+    if (budget <= 0) break;
     let token: string;
     try {
       token = await pageToken(env, page);
@@ -267,6 +362,7 @@ export async function syncConnectedPages(env: Env): Promise<void> {
         fields: 'followers_count',
         access_token: token,
       });
+      budget--;
       if (typeof info.followers_count === 'number') {
         const today = new Date(NOW).toISOString().slice(0, 10);
         await env.DB.prepare('UPDATE pages SET seguidores = ? WHERE id = ?').bind(info.followers_count, page.id).run();
@@ -277,29 +373,36 @@ export async function syncConnectedPages(env: Env): Promise<void> {
           .run();
       }
     } catch (e) {
+      if (isTokenError(e)) {
+        await env.DB.prepare('UPDATE pages SET token_invalid = 1 WHERE id = ?').bind(page.id).run();
+        continue;
+      }
       console.warn('sync followers falhou', page.handle, e);
     }
 
-    // posts com ig_media_id publicados nos últimos 90d — os mais novos primeiro, até 20 por rodada
+    // rotação: menos-recentemente-sincronizados primeiro (nunca-sincronizados vêm antes)
     const posts = (
       await env.DB.prepare(
-        `SELECT * FROM posts WHERE page_id = ? AND ig_media_id IS NOT NULL
-          AND status IN ('analisando','publicado') AND ts >= ? ORDER BY ts DESC LIMIT 20`,
+        `SELECT p.*, m.curve AS _curve FROM posts p LEFT JOIN post_metrics m ON m.post_id = p.id
+          WHERE p.page_id = ? AND p.ig_media_id IS NOT NULL AND p.status IN ('analisando','publicado') AND p.ts >= ?
+          ORDER BY COALESCE(m.synced_at, 0) ASC LIMIT ?`,
       )
-        .bind(page.id, NOW - 90 * DAY)
-        .all<PostRow>()
+        .bind(page.id, NOW - 90 * DAY, Math.max(1, Math.floor(budget / 2)))
+        .all<PostRow & { _curve: string | null }>()
     ).results;
 
     for (const post of posts) {
+      if (budget <= 1) break;
       try {
         const media = await graph<{ like_count?: number; comments_count?: number }>(`/${post.ig_media_id}`, {
           fields: 'like_count,comments_count',
           access_token: token,
         });
         const ins = await graph<{ data: InsightValue[] }>(`/${post.ig_media_id}/insights`, {
-          metric: 'reach,views,saved,shares,profile_activity,follows',
+          metric: metricsFor(post.fmt),
           access_token: token,
         });
+        budget -= 2;
         const get = (name: string): number => {
           const m = ins.data.find((d) => d.name === name);
           const v = m?.values?.[0]?.value;
@@ -308,11 +411,21 @@ export async function syncConnectedPages(env: Env): Promise<void> {
           return 0;
         };
         const re = get('reach');
+        // curva 48h: acumula amostras reais de alcance nas primeiras 48h
+        let curveJson: string | null = post._curve;
+        const ageH = (NOW - post.ts) / 36e5;
+        if (ageH <= 48) {
+          const prev = json<{ samples?: [number, number][] } | number[] | null>(post._curve, null);
+          const samples: [number, number][] = (prev && !Array.isArray(prev) && prev.samples) || [];
+          samples.push([+ageH.toFixed(2), re]);
+          if (samples.length > 60) samples.splice(0, samples.length - 60);
+          curveJson = JSON.stringify({ samples, curve: buildCurve(samples) });
+        }
         await env.DB.prepare(
-          `INSERT INTO post_metrics (post_id, re, im, li, co, sh, sa, cl, nf, synced_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO post_metrics (post_id, re, im, li, co, sh, sa, cl, nf, curve, synced_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(post_id) DO UPDATE SET re=excluded.re, im=excluded.im, li=excluded.li, co=excluded.co,
-             sh=excluded.sh, sa=excluded.sa, cl=excluded.cl, nf=excluded.nf, synced_at=excluded.synced_at`,
+             sh=excluded.sh, sa=excluded.sa, cl=excluded.cl, nf=excluded.nf, curve=excluded.curve, synced_at=excluded.synced_at`,
         )
           .bind(
             post.id,
@@ -324,10 +437,15 @@ export async function syncConnectedPages(env: Env): Promise<void> {
             get('saved'),
             get('profile_activity'),
             get('follows'),
+            curveJson,
             NOW,
           )
           .run();
       } catch (e) {
+        if (isTokenError(e)) {
+          await env.DB.prepare('UPDATE pages SET token_invalid = 1 WHERE id = ?').bind(page.id).run();
+          break;
+        }
         console.warn('sync insights falhou', post.id, e);
       }
     }
@@ -335,8 +453,16 @@ export async function syncConnectedPages(env: Env): Promise<void> {
 }
 
 export async function fullSync(env: Env): Promise<void> {
+  const NOW = Date.now();
   await publishDue(env);
   await syncConnectedPages(env);
+  // transição analisando → publicado após 48h, só pra posts reais (têm ig_media_id);
+  // os de demo (sem ig_media_id) são tratados pelo demoSync.
+  await env.DB.prepare(
+    "UPDATE posts SET status = 'publicado', updated_at = ? WHERE status = 'analisando' AND ig_media_id IS NOT NULL AND ts <= ?",
+  )
+    .bind(NOW, NOW - 48 * 36e5)
+    .run();
   await recomputeIdp(env);
-  await env.CACHE.put('sync:last', String(Date.now()));
+  await env.CACHE.put('sync:last', String(NOW));
 }

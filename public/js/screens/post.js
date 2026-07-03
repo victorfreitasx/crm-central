@@ -201,12 +201,20 @@ export async function postScreen(params, query) {
     } else if (p.status === 'erro') {
       title = 'falha ao publicar';
       txt = p.publish_error || 'erro desconhecido ao publicar.';
-      action = btn('tentar de novo', 'ink', async () => {
+      let retrying = false;
+      action = btn('tentar de novo', 'ink', async (ev) => {
+        if (retrying) return; // sem double-publish
+        retrying = true;
+        if (ev && ev.target) ev.target.style.opacity = '0.5';
         try {
           await api.post('/api/posts/' + p.id + '/schedule', { ts: Date.now(), now: true });
           toast('tentando publicar de novo');
           location.reload();
-        } catch (e) { toast(e.message); }
+        } catch (e) {
+          retrying = false;
+          if (ev && ev.target) ev.target.style.opacity = '1';
+          toast(e.message);
+        }
       });
     } else {
       title = 'rascunho em andamento';

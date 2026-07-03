@@ -96,9 +96,10 @@ export async function demoSync(env: Env): Promise<number> {
     touched++;
   }
 
-  // 3) 48h de análise → publicado (todas as páginas)
+  // 3) 48h de análise → publicado (só posts de demo, sem ig_media_id; os reais
+  //    são tratados pelo fullSync). Evita mexer em posts de páginas conectadas.
   const flipped = await env.DB.prepare(
-    "UPDATE posts SET status = 'publicado', updated_at = ? WHERE status = 'analisando' AND ts <= ?",
+    "UPDATE posts SET status = 'publicado', updated_at = ? WHERE status = 'analisando' AND ig_media_id IS NULL AND ts <= ?",
   )
     .bind(NOW, NOW - 48 * 36e5)
     .run();

@@ -84,6 +84,7 @@ export const state = {
   authMode: 'dev',
   demoMode: false,
   metaConfigured: false,
+  lastSync: null,    // epoch ms da última sync de métricas
   studio: null,      // rascunho corrente do estúdio (persiste entre telas)
 };
 
@@ -97,17 +98,16 @@ export async function loadBootstrap() {
   state.authMode = b.authMode;
   state.demoMode = b.demoMode;
   state.metaConfigured = b.metaConfigured;
+  state.lastSync = b.lastSync ?? null;
   return b;
 }
 
 export const page = (id) => state.pages.find((p) => p.id === id) || { id, handle: '@?', nome: '?', color: '#151210', fg: '#FBF4E9' };
 export const user = (id) => state.users.find((u) => u.id === id) || (state.me && state.me.id === id ? state.me : { id, nome: '—', cargo: '', cor: '#F4E9D6' });
 export const isGestor = () => state.me?.role === 'gestor';
-export const accessPages = () => {
-  if (isGestor()) return state.pages;
-  const mine = state.pages.filter((p) => state.me?.pages?.includes(p.id));
-  return mine.length ? mine : state.pages;
-};
+// equipe só vê as páginas liberadas — SEM fallback pra todas (senão o estúdio
+// pré-seleciona uma página que o backend rejeita com 403).
+export const accessPages = () => (isGestor() ? state.pages : state.pages.filter((p) => state.me?.pages?.includes(p.id)));
 
 // ---------- roteador (hash) ----------
 const routes = [];
@@ -131,7 +131,10 @@ export function matchRoute(path) {
     const m = path.match(rx);
     if (m) {
       const params = {};
-      keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+      keys.forEach((k, i) => {
+        // hash malformado (%-escape quebrado) não pode derrubar o roteador
+        try { params[k] = decodeURIComponent(m[i + 1]); } catch { params[k] = m[i + 1]; }
+      });
       return { screen: r.screen, params };
     }
   }

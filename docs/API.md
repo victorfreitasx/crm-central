@@ -31,9 +31,11 @@ Erros: `{ "error": "mensagem" }` com status 4xx/5xx. Timestamps em **epoch ms**.
   "users": [{"id","nome","cargo","cor","role","status","pages":["pg1"]}],
   "perms": {"criar":true,"agendar":true,"metricas":false,"exportar":false},
   "metaSemanal": 6, "authMode": "dev", "demoMode": true, "metaConfigured": false,
-  "weekStart": 1782518400000
+  "weekStart": 1782518400000, "lastSync": 1783000000000
 }
 ```
+Cálculo de calendário (weekStart, heatmap, meta semanal) usa o fuso da marca —
+setting `tz`, default `America/Sao_Paulo`.
 
 ## Dashboard (gestor)
 - `GET /api/dashboard` →
@@ -81,11 +83,13 @@ Erros: `{ "error": "mensagem" }` com status 4xx/5xx. Timestamps em **epoch ms**.
   - futuro ⇒ `agendado` (cron publica)
 
 ## Agenda
-- `GET /api/agenda?y=2026&m=6` (m = 0-11) →
+- `GET /api/agenda?y=2026&m=6&start=<epoch>&end=<epoch>` (m = 0-11; `start`/`end` =
+  limites do mês em epoch ms no fuso local do navegador — evita erro de fronteira UTC×local) →
   `{month:[post], fila:[post×7], drafts:[post], heat, bestDay, bestSlot}`
+  Para equipe sem permissão `metricas`, `m/idp/er` de posts de colegas vêm `null` (calendário sem métricas alheias).
 
 ## Páginas
-- `GET /api/pages` → `{cards:[{id,handle,nome,color,fg,vert,seguidores,connected,stats:{posts30,re,eng,nf,spark:[8],topFmt},team:[userIds]}]}`
+- `GET /api/pages` → `{cards:[{id,handle,nome,color,fg,vert,seguidores,connected,tokenInvalid,stats:{posts30,re,eng,nf,spark:[8],topFmt},team:[userIds]}]}` (`tokenInvalid`: token da Graph API caiu → UI pede "reconectar")
 
 ## Config (gestor)
 - `GET /api/config` → `{members:[{id,nome,email,cargo,role,cor,status,last_seen_at,pages:[]}], perms, metaSemanal, infra:{posts,metrics,pages,lastSync,demoMode,metaConfigured,authMode}}`

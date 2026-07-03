@@ -31,11 +31,16 @@ function ensureStudio() {
       caption: '',
     };
   }
-  // célula de mídia: {key?, url?, blob?}
+  // célula de mídia: {key?, url?, blob?} | null (mantém a posição na grade)
   for (const sl of state.studio.slides) {
-    sl.media = (sl.media || []).map((m) => (typeof m === 'string' ? { key: m, url: '/media/' + m } : m));
+    sl.media = (sl.media || []).map((m) => (typeof m === 'string' ? { key: m, url: '/media/' + m } : m || null));
   }
   return state.studio;
+}
+
+// libera object URLs de blobs pra não vazar memória ao descartar/trocar
+export function freeStudioBlobs(slides) {
+  for (const sl of slides || []) for (const c of sl.media || []) if (c && c.blob && c.url) URL.revokeObjectURL(c.url);
 }
 
 const verifiedSvg = (size) =>
@@ -45,6 +50,19 @@ const verifiedSvg = (size) =>
   );
 
 export async function studioScreen() {
+  // equipe sem nenhuma página liberada não tem onde publicar
+  if (!isGestor() && accessPages().length === 0) {
+    return section('Estúdio',
+      h('div', { style: 'display:flex;flex-direction:column;gap:6px' },
+        h('span', { style: 'font-family:var(--font-mono);font-size:10px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-500)' }, '★ estúdio'),
+        h('h1', { style: 'margin:0;font-family:var(--font-display);font-weight:800;font-size:40px;letter-spacing:-0.02em;line-height:0.94' }, 'monta teu post'),
+      ),
+      h('div', { style: 'background:var(--paper-100);border:2px dashed var(--ink-300);border-radius:16px;padding:32px;display:flex;flex-direction:column;gap:10px;align-items:flex-start' },
+        h('span', { style: 'font-family:var(--font-display);font-weight:800;font-size:22px' }, 'sem páginas liberadas'),
+        h('span', { style: 'font-size:14px;color:var(--ink-700);max-width:480px;line-height:1.5' }, 'você ainda não tem acesso a nenhuma página da rede. peça pro gestor liberar seu acesso em config → membros.'),
+      ),
+    );
+  }
   const s = ensureStudio();
   const wrap = h('div', {});
 
@@ -70,7 +88,8 @@ export async function studioScreen() {
       comment_on: s.cOn,
       comment_page_id: s.cPage,
       comment_text: s.cText,
-      slides: s.slides.map((sl) => ({ frame: sl.frame, media: sl.media.filter((m) => m && m.key).map((m) => m.key) })),
+      // POSICIONAL: célula vazia/ainda-não-enviada vira null pra não embaralhar as imagens
+      slides: s.slides.map((sl) => ({ frame: sl.frame, media: sl.media.map((m) => (m && m.key ? m.key : null)) })),
     };
     if (s.postId) await api.put('/api/posts/' + s.postId, body);
     else s.postId = (await api.post('/api/posts', body)).id;
@@ -86,10 +105,11 @@ export async function studioScreen() {
         }
       }
     }
-    // renderiza e sobe a arte final de cada slide (é ela que vai pro Instagram)
+    // renderiza e sobe a arte final (JPEG — é o formato que o Instagram aceita) de
+    // cada slide; é ela que vai pro feed.
     for (let i = 0; i < s.slides.length; i++) {
       const blob = await renderArt(i);
-      if (blob) await api.upload(`/api/posts/${s.postId}/media?slide=${i}&cell=art`, blob, 'image/png');
+      if (blob) await api.upload(`/api/posts/${s.postId}/media?slide=${i}&cell=art`, blob, 'image/jpeg');
     }
     return s.postId;
   }
@@ -130,6 +150,7 @@ export async function studioScreen() {
       const id = await persistDraft();
       busy = false;
       openScheduleModal({ id, page_id: s.page }, (mode) => {
+        freeStudioBlobs(s.slides);
         state.studio = null;
         if (mode === 'agora') {
           toast('enviado pro instagram — primeira sync de métricas em ~30 min');
@@ -152,7 +173,7 @@ export async function studioScreen() {
       const files = [];
       for (let i = 0; i < s.slides.length; i++) {
         const blob = await renderArt(i);
-        if (blob) files.push({ name: `arte-${String(i + 1).padStart(2, '0')}.png`, blob });
+        if (blob) files.push({ name: `arte-${String(i + 1).padStart(2, '0')}.jpg`, blob });
       }
       download(await makeZip(files), 'placar-post.zip');
       toast(`gerando ${files.length} arte(s) em 1080×1350 — placar-post.zip baixado`);
@@ -268,6 +289,8 @@ export async function studioScreen() {
       const pick = (files) => {
         const f = files && files[0];
         if (!f) return;
+        const prev = slide.media[i];
+        if (prev && prev.blob && prev.url) URL.revokeObjectURL(prev.url); // não vaza o URL antigo
         slide.media[i] = { blob: f, url: URL.createObjectURL(f), key: null };
         mut();
       };

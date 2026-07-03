@@ -3,6 +3,7 @@
 // Cache no KV por 3 min; invalidado em qualquer escrita de post/sync.
 import type { Env, Fmt } from '../types';
 import { DAY } from '../types';
+import { DEFAULT_TZ, localParts, weekStartTz } from './tz';
 
 export interface PubPost {
   id: string;
@@ -83,12 +84,9 @@ export async function invalidateAgg(env: Env): Promise<void> {
   await env.CACHE.delete(CACHE_KEY);
 }
 
-/** Segunda-feira 00:00 da semana corrente (semana começa na segunda, como no painel). */
-export function weekStart(now: number): number {
-  const d = new Date(now);
-  d.setHours(0, 0, 0, 0);
-  const dow = (d.getDay() + 6) % 7;
-  return d.getTime() - dow * DAY;
+/** Segunda-feira 00:00 local (fuso da marca) da semana de `now`. */
+export function weekStart(now: number, tz: string = DEFAULT_TZ): number {
+  return weekStartTz(now, tz);
 }
 
 export async function loadPublished(env: Env, sinceDays = 90): Promise<PubPost[]> {
@@ -117,16 +115,21 @@ export async function computeAgg(env: Env): Promise<Agg> {
   }
 
   const NOW = Date.now();
-  const W0 = weekStart(NOW);
+  const tzRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'tz'").first<{ value: string }>();
+  const TZ = tzRow?.value || DEFAULT_TZ;
+  const W0 = weekStart(NOW, TZ);
   const pub = await loadPublished(env);
   const in30 = (p: PubPost) => p.ts >= NOW - 30 * DAY;
 
   const users = (await env.DB.prepare("SELECT id FROM users WHERE role = 'equipe' AND status != 'suspenso'").all<{ id: string }>()).results;
   const pages = (await env.DB.prepare('SELECT id FROM pages').all<{ id: string }>()).results;
 
-  // contagens da semana (inclui agendado; exclui rascunho — igual ao protótipo)
+  // contagens da semana (agendado/analisando/publicado contam pra meta; 'erro' e
+  // 'rascunho' não — publicação que falhou não deve bater a meta semanal)
   const weekRows = (
-    await env.DB.prepare("SELECT author_id, COUNT(*) AS c FROM posts WHERE ts >= ? AND ts < ? AND status != 'rascunho' GROUP BY author_id")
+    await env.DB.prepare(
+      "SELECT author_id, COUNT(*) AS c FROM posts WHERE ts >= ? AND ts < ? AND status IN ('agendado','analisando','publicado') GROUP BY author_id",
+    )
       .bind(W0, W0 + 7 * DAY)
       .all<{ author_id: string; c: number }>()
   ).results;
@@ -214,16 +217,20 @@ export async function computeAgg(env: Env): Promise<Agg> {
       return f(pub.filter((p) => dayOf(p) === d));
     });
 
-  const weekTotal = await env.DB.prepare("SELECT COUNT(*) AS c FROM posts WHERE ts >= ? AND ts < ? AND status != 'rascunho'")
+  const weekTotal = await env.DB.prepare(
+    "SELECT COUNT(*) AS c FROM posts WHERE ts >= ? AND ts < ? AND status IN ('agendado','analisando','publicado')",
+  )
     .bind(W0, W0 + 7 * DAY)
     .first<{ c: number }>();
 
-  // heat 7 dias × 5 faixas (média de engajamento, 60d) — janela ótima de postagem
+  // heat 7 dias × 5 faixas (média de engajamento, 60d) — janela ótima de postagem.
+  // Dia e hora no fuso da marca (não UTC do runtime).
   const heat: number[][] = Array.from({ length: 7 }, () => [0, 0, 0, 0, 0]);
   const hc: number[][] = Array.from({ length: 7 }, () => [0, 0, 0, 0, 0]);
   for (const p of pub.filter((x) => x.ts >= NOW - 60 * DAY)) {
-    const d = (new Date(p.ts).getDay() + 6) % 7;
-    const h = new Date(p.ts).getHours();
+    const lp = localParts(p.ts, TZ);
+    const d = (lp.dow + 6) % 7;
+    const h = lp.hour;
     const s = h < 11 ? 0 : h < 14 ? 1 : h < 17 ? 2 : h < 20 ? 3 : 4;
     const hrow = heat[d] as number[];
     const crow = hc[d] as number[];

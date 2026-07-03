@@ -68,7 +68,7 @@ export async function paginasScreen(params, query) {
           h('span', { style: 'font-size:12px;color:var(--ink-500);white-space:nowrap;overflow:hidden;text-overflow:ellipsis' }, pg.nome),
         ),
         h('div', { style: 'flex:1' }),
-        h('span', { style: 'font-family:var(--font-mono);font-size:9px;font-weight:700;background:' + (pg.connected ? 'var(--lime-200)' : 'var(--paper-100)') + ';border:2px solid var(--ink-900);border-radius:5px;padding:2px 6px;white-space:nowrap' }, pg.connected ? 'conectada' : 'demo'),
+        h('span', { style: 'font-family:var(--font-mono);font-size:9px;font-weight:700;background:' + (pg.tokenInvalid ? 'var(--red-100)' : pg.connected ? 'var(--lime-200)' : 'var(--paper-100)') + ';border:2px solid var(--ink-900);border-radius:5px;padding:2px 6px;white-space:nowrap' }, pg.tokenInvalid ? 'reconectar' : pg.connected ? 'conectada' : 'demo'),
         h('span', { style: 'font-family:var(--font-mono);font-size:9.5px;font-weight:700;background:var(--lime-200);border:2px solid var(--ink-900);border-radius:5px;padding:2px 6px;white-space:nowrap' }, '+' + K(s.nf) + ' · 30d'),
       ),
       h('div', { style: 'display:flex;align-items:flex-end;justify-content:space-between;gap:8px' },
